@@ -31,35 +31,48 @@ pub fn process_instruction(
             process_init_user_account(program_id, accounts)
         }
 
-        VaultInstruction::InitVaultAccount { data } => {
-            msg!("Vaul Account Creation");
-            process_init_vault(program_id, accounts, data)
+        VaultInstruction::InitVaultAccount {
+            vault_name,
+            // data
+        } => {
+            msg!("Vault Account creation");
+            process_init_vault(program_id, accounts, vault_name)
+        }
+
+        VaultInstruction::InitAddInVault {
+            vault_name,
+            data
+        } => {
+            msg!("Adding in Vault account");
+            process_add_in_vault(program_id, accounts, data, vault_name)
         }
 
         VaultInstruction::EditVaultAccount {
             data,
+            vault_name,
             index,
             delete,
         } => {
             msg!("Vaul Account Creation");
-            process_edit_vault(program_id, accounts, data, index, delete)
+            process_edit_vault(program_id, accounts, data, index, delete, vault_name)
         }
     }
 }
 
+
 fn process_init_user_account(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let accounts_iter = &mut accounts.iter();
     let user_wallet = next_account_info(accounts_iter)?;
-    let system_program_info = next_account_info(accounts_iter)?;
     let user_account_info = next_account_info(accounts_iter)?;
+    let system_program_info = next_account_info(accounts_iter)?;
 
     if !user_wallet.is_signer {
         msg!("Sorry, you are not the signer");
         return Err(VaultError::InvalidAccountData.into());
     }
 
-    let (user_pda, vault_bump) =
-        Pubkey::find_program_address(&[b"user", user_wallet.key.as_ref()], program_id);
+    let (user_pda, user_bump) =
+        Pubkey::find_program_address(&[b"user_at_password_manager", user_wallet.key.as_ref()], program_id);
 
     if user_pda != *user_account_info.key {
         return Err(VaultError::InvalidAccountData.into());
@@ -68,7 +81,7 @@ fn process_init_user_account(program_id: &Pubkey, accounts: &[AccountInfo]) -> P
     if user_account_info.data_is_empty() {
         let vaults: Vec<Pubkey> = Vec::new();
         let rent = Rent::get()?;
-        let user_size = 32 + 4 + vaults.len() * 32;
+        let user_size = 32 + 4 ;
 
         invoke_signed(
             &system_instruction::create_account(
@@ -83,7 +96,7 @@ fn process_init_user_account(program_id: &Pubkey, accounts: &[AccountInfo]) -> P
                 user_account_info.clone(),
                 system_program_info.clone(),
             ],
-            &[&[b"user", user_wallet.key.as_ref(), &[vault_bump]]],
+            &[&[b"user_at_password_manager", user_wallet.key.as_ref(), &[user_bump]]],
         )?;
 
         let user_data = UserAccount {
@@ -96,37 +109,59 @@ fn process_init_user_account(program_id: &Pubkey, accounts: &[AccountInfo]) -> P
     }
     Ok(())
 }
+
+
 fn process_init_vault(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
-    data: Vec<u8>,
+    vault_name: String,
 ) -> ProgramResult {
     let accounts_iter = &mut accounts.iter();
     let user_wallet = next_account_info(accounts_iter)?;
     let user_account_info = next_account_info(accounts_iter)?;
-    let system_program_info = next_account_info(accounts_iter)?;
     let vault_account_info = next_account_info(accounts_iter)?;
+    let system_program_info = next_account_info(accounts_iter)?;
 
     if !user_wallet.is_signer {
-        msg!("Sorry, you are not the signer");
+        msg!("Error: user_wallet is not signer");
         return Err(VaultError::InvalidAccountData.into());
     }
 
-    let (vault_pda, vault_bump) =
-        Pubkey::find_program_address(&[b"vault", user_wallet.key.as_ref()], program_id);
-    let (user_pda, _user_bump) =
-        Pubkey::find_program_address(&[b"user", user_wallet.key.as_ref()], program_id);
+    let (vault_pda, vault_bump) = Pubkey::find_program_address(
+        &[b"vault", user_wallet.key.as_ref(), vault_name.as_bytes()],
+        program_id,
+    );
+    let (user_pda, _user_bump) = Pubkey::find_program_address(
+        &[b"user_at_password_manager", user_wallet.key.as_ref()],
+        program_id,
+    );
 
-    if vault_pda != *vault_account_info.key || user_pda != *user_account_info.key {
+    if vault_pda != *vault_account_info.key {
+        msg!("Error: Invalid vault PDA. Expected {}, got {}", vault_pda, vault_account_info.key);
         return Err(VaultError::InvalidAccountData.into());
     }
+    if user_pda != *user_account_info.key {
+        msg!("Error: Invalid user PDA. Expected {}, got {}", user_pda, user_account_info.key);
+        return Err(VaultError::InvalidAccountData.into());
+    }
+
+    // Verify user account is initialized and program-owned
+    if user_account_info.data_is_empty() || *user_account_info.owner != *program_id {
+        msg!("Error: User account not initialized or not owned by program");
+        return Err(VaultError::InvalidAccountData.into());
+    }
+
+    // Validate user account data
+    let mut user_data = UserAccount::try_from_slice(&user_account_info.data.borrow())?;
+
+    msg!("Vault name: {}", vault_name);
 
     if vault_account_info.data_is_empty() {
-        let credential = Credentials::try_from_slice(&data)?;
         let rent = Rent::get()?;
-        let vault_size = 32 + 4 + data.len();
+        // Adjust vault_size based on VaultAccount struct
+        let vault_size = 32 + 32 + 4; // Discriminator + Pubkey + String (len + data) + Vec (len)
 
-        // Creation of the vault account to store the encrypted data
+        // Create vault account
         invoke_signed(
             &system_instruction::create_account(
                 user_wallet.key,
@@ -140,43 +175,53 @@ fn process_init_vault(
                 vault_account_info.clone(),
                 system_program_info.clone(),
             ],
-            &[&[b"vault", user_wallet.key.as_ref(), &[vault_bump]]],
+            &[&[b"vault", user_wallet.key.as_ref(), vault_name.as_bytes(), &[vault_bump]]],
         )?;
 
-        // Adding required bytes in the user account for the addition of the vault account's public key
+        // Calculate new user account size
         let old_size = user_account_info.data_len();
-        let new_size = old_size + data.len();
+        let new_size = old_size + 32; // Add space for vault Pubkey
         let old_rent = rent.minimum_balance(old_size);
         let new_rent = rent.minimum_balance(new_size);
-        let rent_diff = new_rent - old_rent;
+        let rent_diff = new_rent.saturating_sub(old_rent);
 
-        // Paying rent for the added bytes in the user account
-        invoke(
-            &system_instruction::transfer(user_wallet.key, user_account_info.key, rent_diff),
-            &[
-                user_wallet.clone(),
-                user_account_info.clone(),
-                system_program_info.clone(),
-            ],
-        )?;
+        if rent_diff > 0 {
+            invoke(
+                &system_instruction::transfer(user_wallet.key, user_account_info.key, rent_diff),
+                &[
+                    user_wallet.clone(),
+                    user_account_info.clone(),
+                    system_program_info.clone(),
+                ],
+            )?;
+        }
 
-        // Setting data in the vault account
-        let mut data = Vec::new();
-        data.push(credential);
+        let data=Vec::new();
+        // Converting the fund_name to an array of u8 of fixed size 32
+        let bytes = vault_name.as_bytes();
+        let mut array = [0u8; 32];
+        let len = bytes.len().min(32);
+        array[..len].copy_from_slice(&bytes[..len]);
+        // Serialize vault data
         let vault_data = VaultAccount {
+            name: array,
             user_account: *user_account_info.key,
             data,
         };
         vault_data.serialize(&mut &mut vault_account_info.data.borrow_mut()[..])?;
 
-        // Reallocating for added bytes in the user account
+        // Update user account
         user_account_info.realloc(new_size, false)?;
-        // Adding new data in the user account(created vault account's public key)
-        let mut user_data = UserAccount::try_from_slice(&user_account_info.data.borrow())?;
+        // let mut user_data = UserAccount {
+        //     user_address: user_pda,
+        //     vaults: user_data.vaults,
+        // };
         user_data.vaults.push(*vault_account_info.key);
         user_data.serialize(&mut &mut user_account_info.data.borrow_mut()[..])?;
+
+        msg!("Vault created: {} for user {}", vault_name, user_wallet.key);
     } else {
-        msg!("Vault account already created!");
+        msg!("Error: Vault account already exists");
         return Err(VaultError::InvalidAccountData.into());
     }
     Ok(())
@@ -185,11 +230,12 @@ fn process_init_vault(
 pub fn process_add_in_vault(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
-    data: Vec<u8>,
+    data:[u8; 64] ,
+    vault_name: String,
 ) -> ProgramResult {
     let accounts_iter = &mut accounts.iter();
     let user_wallet = next_account_info(accounts_iter)?;
-    let user_account_info = next_account_info(accounts_iter)?;
+    // let user_account_info = next_account_info(accounts_iter)?;
     let system_program_info = next_account_info(accounts_iter)?;
     let vault_account_info = next_account_info(accounts_iter)?;
 
@@ -199,12 +245,15 @@ pub fn process_add_in_vault(
     }
 
     let (vault_pda, _vault_bump) =
-        Pubkey::find_program_address(&[b"vault", user_wallet.key.as_ref()], program_id);
-    let (user_pda, _user_bump) =
-        Pubkey::find_program_address(&[b"user", user_wallet.key.as_ref()], program_id);
+        Pubkey::find_program_address(&[b"vault", user_wallet.key.as_ref(), vault_name.as_bytes()], program_id);
 
-    if vault_pda != *vault_account_info.key || user_pda != *user_account_info.key {
+    if vault_pda != *vault_account_info.key {
         return Err(VaultError::InvalidAccountData.into());
+    }
+
+    if vault_account_info.data_len() > 10176 {
+        msg!("Need to create a new vault");
+        return Err(VaultError::TooMuchData.into());
     }
 
     // Checking if the vault account is empty
@@ -221,7 +270,11 @@ pub fn process_add_in_vault(
 
         // Paying rent for the added bytes in the vault account
         invoke(
-            &system_instruction::transfer(user_wallet.key, vault_account_info.key, rent_diff),
+            &system_instruction::transfer(
+                user_wallet.key,
+                vault_account_info.key,
+                rent_diff
+            ),
             &[
                 user_wallet.clone(),
                 vault_account_info.clone(),
@@ -245,9 +298,10 @@ pub fn process_add_in_vault(
 pub fn process_edit_vault(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
-    data: Vec<u8>,
+    data: [u8; 64],
     index: u32,
     delete: u8,
+    vault_name: String,
 ) -> ProgramResult {
     let accounts_iter = &mut accounts.iter();
     let user_wallet = next_account_info(accounts_iter)?;
@@ -260,7 +314,7 @@ pub fn process_edit_vault(
     }
 
     let (vault_pda, _vault_bump) =
-        Pubkey::find_program_address(&[b"vault", user_wallet.key.as_ref()], program_id);
+        Pubkey::find_program_address(&[b"vault", user_wallet.key.as_ref(), vault_name.as_bytes()], program_id);
 
     if *vault_account_info.key != vault_pda {
         return Err(VaultError::InvalidAccountData.into());
@@ -282,7 +336,11 @@ pub fn process_edit_vault(
 
         // Paying the rent recovered to the user wallet
         invoke(
-            &system_instruction::transfer(vault_account_info.key, user_wallet.key, rent_diff),
+            &system_instruction::transfer(
+                vault_account_info.key,
+                user_wallet.key,
+                rent_diff
+            ),
             &[
                 user_wallet.clone(),
                 vault_account_info.clone(),

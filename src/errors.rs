@@ -5,6 +5,7 @@ pub enum VaultError {
     InvalidAccountData,
     DataUnpackError,
     InvalidInstruction,
+    TooMuchData
 }
 
 impl From<VaultError> for ProgramError {

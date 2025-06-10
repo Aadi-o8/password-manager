@@ -3,6 +3,7 @@ use borsh::{BorshSerialize, BorshDeserialize};
 
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct VaultAccount {
+    pub name: [u8; 32],
     pub user_account: Pubkey,
     pub data: Vec<Credentials>,
 }
@@ -14,6 +15,6 @@ pub struct UserAccount {
 
 #[derive(BorshSerialize, BorshDeserialize, Clone)]
 pub struct Credentials {
-    field: Vec<u8>,
-    passkey: Vec<u8>,
+    field: [u8; 32],
+    passkey: [u8; 32],
 }
